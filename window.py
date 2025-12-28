@@ -3,11 +3,14 @@ from ttkbootstrap.constants import *
 import webbrowser
 import re
 import sys
+import os
 import threading
-from utils import download_video
+from tkinter import filedialog
+from utils import download_video, check_ffmpeg, cleanup_temp_files, PathConfig
 from exAudio import convert_flv_to_mp3, split_mp3, process_audio_split
 
 speech_to_text = None  # 模型实例
+ffmpeg_available = False  # ffmpeg 是否可用
 
 def is_cuda_available(whisper):
     return whisper.torch.cuda.is_available()
@@ -46,7 +49,10 @@ def show_log(text, state="INFO"):
     log_text.config(state="disabled")
 
 def on_submit_click():
-    global speech_to_text
+    global speech_to_text, ffmpeg_available
+    if not ffmpeg_available:
+        print("错误：ffmpeg 未安装，无法处理视频！")
+        return
     if speech_to_text is None:
         print("Whisper未加载！请点击加载Whisper按钮。")
         return
@@ -68,19 +74,25 @@ def on_submit_click():
     thread.start()
 
 def process_video(av_number):
-    print("=" * 10)
-    print("正在下载视频...")
-    file_identifier = download_video(str(av_number))
-    print("=" * 10)
-    print("正在分割音频...")
-    # 使用音频模块处理
-    folder_name = process_audio_split(file_identifier)
-    print("=" * 10)
-    print("正在转换文本（可能耗时较长）...")
-    speech_to_text.run_analysis(folder_name, 
-        prompt="以下是普通话的句子。这是一个关于{}的视频。".format(file_identifier))
-    output_path = f"outputs/{folder_name}.txt"
-    print("转换完成！", output_path)
+    try:
+        print("=" * 10)
+        print("正在下载视频...")
+        file_identifier = download_video(str(av_number))
+        print("=" * 10)
+        print("正在分割音频...")
+        # 使用音频模块处理
+        folder_name = process_audio_split(file_identifier)
+        print("=" * 10)
+        print("正在转换文本（可能耗时较长）...")
+        output_path = speech_to_text.run_analysis(folder_name, 
+            prompt="以下是普通话的句子。这是一个关于{}的视频。".format(file_identifier))
+        print(f"转换完成！输出文件: {output_path}")
+    finally:
+        # 清理临时文件
+        print("=" * 10)
+        print("正在清理临时文件...")
+        cleanup_temp_files()
+        print("处理完成！")
 
 def on_generate_again_click():
     print("再次生成...")
@@ -129,6 +141,33 @@ def load_whisper_model():
 
 def open_github_link(event=None):
     webbrowser.open_new("https://github.com/lanbinshijie/bili2text")
+
+def select_video_dir():
+    """选择视频下载目录"""
+    path = filedialog.askdirectory(title="选择视频下载目录")
+    if path:
+        PathConfig.set_video_dir(path)
+        video_dir_var.set(path)
+        print(f"视频下载目录已设置为: {path}")
+
+def select_output_dir():
+    """选择TXT导出目录"""
+    path = filedialog.askdirectory(title="选择TXT导出目录")
+    if path:
+        PathConfig.set_output_dir(path)
+        output_dir_var.set(path)
+        print(f"TXT导出目录已设置为: {path}")
+
+def check_ffmpeg_status():
+    """检查 ffmpeg 状态并显示结果"""
+    global ffmpeg_available
+    available, message = check_ffmpeg()
+    ffmpeg_available = available
+    if available:
+        ffmpeg_status_label.config(text="✓ ffmpeg 已就绪", foreground="green")
+    else:
+        ffmpeg_status_label.config(text="✗ ffmpeg 未安装", foreground="red")
+        print(message)
 
 def redirect_system_io():
     global _orig_stdout, _orig_stderr
@@ -181,11 +220,41 @@ def redirect_system_io():
     sys.stderr = StdoutRedirector()
 
 def main():
-    global video_link_entry, log_text, model_var
+    global video_link_entry, log_text, model_var, video_dir_var, output_dir_var, ffmpeg_status_label
     app = ttk.Window("Bili2Text - By Lanbin | www.lanbin.top", themename="litera")
-    app.geometry("820x540")
+    app.geometry("820x620")
     app.iconbitmap("favicon.ico")
     ttk.Label(app, text="Bilibili To Text", font=("Helvetica", 16)).pack(pady=10)
+    
+    # 路径配置区域
+    path_frame = ttk.LabelFrame(app, text="路径配置", padding=10)
+    path_frame.pack(fill=X, padx=20, pady=5)
+    
+    # 视频下载目录
+    video_dir_row = ttk.Frame(path_frame)
+    video_dir_row.pack(fill=X, pady=2)
+    ttk.Label(video_dir_row, text="视频下载目录:", width=12).pack(side=LEFT)
+    video_dir_var = ttk.StringVar(value=PathConfig.video_dir)
+    video_dir_entry = ttk.Entry(video_dir_row, textvariable=video_dir_var, state="readonly")
+    video_dir_entry.pack(side=LEFT, expand=YES, fill=X, padx=5)
+    ttk.Button(video_dir_row, text="浏览", command=select_video_dir, bootstyle="outline").pack(side=RIGHT)
+    
+    # TXT导出目录
+    output_dir_row = ttk.Frame(path_frame)
+    output_dir_row.pack(fill=X, pady=2)
+    ttk.Label(output_dir_row, text="TXT导出目录:", width=12).pack(side=LEFT)
+    output_dir_var = ttk.StringVar(value=PathConfig.output_dir)
+    output_dir_entry = ttk.Entry(output_dir_row, textvariable=output_dir_var, state="readonly")
+    output_dir_entry.pack(side=LEFT, expand=YES, fill=X, padx=5)
+    ttk.Button(output_dir_row, text="浏览", command=select_output_dir, bootstyle="outline").pack(side=RIGHT)
+    
+    # ffmpeg 状态
+    ffmpeg_row = ttk.Frame(path_frame)
+    ffmpeg_row.pack(fill=X, pady=2)
+    ttk.Label(ffmpeg_row, text="ffmpeg状态:", width=12).pack(side=LEFT)
+    ffmpeg_status_label = ttk.Label(ffmpeg_row, text="检测中...", foreground="gray")
+    ffmpeg_status_label.pack(side=LEFT, padx=5)
+    ttk.Button(ffmpeg_row, text="重新检测", command=check_ffmpeg_status, bootstyle="outline").pack(side=RIGHT)
     
     video_link_frame = ttk.Frame(app)
     video_link_entry = ttk.Entry(video_link_frame)
@@ -194,7 +263,7 @@ def main():
     load_whisper_button.pack(side=RIGHT, padx=5)
     submit_button = ttk.Button(video_link_frame, text="下载视频", command=on_submit_click)
     submit_button.pack(side=RIGHT, padx=5)
-    video_link_frame.pack(fill=X, padx=20)
+    video_link_frame.pack(fill=X, padx=20, pady=5)
     
     log_text = ttk.ScrolledText(app, height=10, state="disabled")
     log_text.pack(padx=20, pady=10, fill=BOTH, expand=YES)
@@ -229,6 +298,10 @@ def main():
     github_link.bind("<Button-1>", open_github_link)
     
     redirect_system_io()
+    
+    # 启动时检测 ffmpeg
+    app.after(100, check_ffmpeg_status)
+    
     app.mainloop()
 
 if __name__ == "__main__":
